@@ -1,0 +1,731 @@
+const pool = require('../config/database');
+const jwt = require('jsonwebtoken');
+
+// Temporary development OTP storage
+const otpStore = new Map();
+
+
+// ======================================================
+// SEND OTP
+// ======================================================
+const sendOtp = async (req, res) => {
+  try {
+    const { phone, role, name,is_registration } = req.body;
+
+    // ------------------------------------------
+    // VALIDATION
+    // ------------------------------------------
+
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone number is required'
+      });
+    }
+
+    if (!/^\d{10}$/.test(phone)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone number must be 10 digits'
+      });
+    }
+
+    if (!role || !['customer', 'worker', 'admin'].includes(role)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid role is required'
+      });
+    }
+
+    // New registration requires name
+    if (
+      !name &&
+      role !== 'admin'
+    ) {
+      // We only require name when the phone number
+      // does not already belong to a user.
+    }
+
+    // ------------------------------------------
+    // CHECK EXISTING USER
+    // ------------------------------------------
+
+    const userResult = await pool.query(
+      `
+      SELECT
+        id,
+        name,
+        phone,
+        email,
+        role,
+        is_active
+      FROM users
+      WHERE phone = $1
+      `,
+      [phone]
+    );
+
+    let user = null;
+    let isNewRegistration = false;
+
+
+    // ==================================================
+    // CHECK NEW / EXISTING USER
+    // ==================================================
+
+    if (userResult.rows.length === 0) {
+
+      // Admin cannot self-register
+      if (role === 'admin') {
+        return res.status(403).json({
+          success: false,
+          message: 'Admin account not found'
+        });
+      }
+
+      // --------------------------------------------------
+      // CUSTOMER LOGIN
+      // --------------------------------------------------
+
+      if (role === 'customer' && is_registration !== true) {
+        return res.status(404).json({
+          success: false,
+          message: 'Customer not found. Please register first.'
+        });
+      }
+
+      // --------------------------------------------------
+      // WORKER LOGIN
+      // --------------------------------------------------
+
+      if (role === 'worker' && is_registration !== true) {
+        return res.status(404).json({
+          success: false,
+          message: 'Worker not found. Please register first.'
+        });
+      }
+
+      // --------------------------------------------------
+      // WORKER REGISTRATION
+      // --------------------------------------------------
+
+      if (role === 'worker') {
+
+        if (!name || !name.trim()) {
+          return res.status(400).json({
+            success: false,
+            message: 'Name is required for worker registration'
+          });
+        }
+      }
+
+
+      // --------------------------------------------------
+      // CUSTOMER REGISTRATION
+      // Name is required
+      // --------------------------------------------------
+
+      if (role === 'customer') {
+
+        if (!name || !name.trim()) {
+          return res.status(400).json({
+            success: false,
+            message: 'Name is required for customer registration'
+          });
+        }
+      }
+
+      isNewRegistration = true;
+
+
+
+    } else {
+
+      // ==================================================
+      // EXISTING USER
+      // ==================================================
+
+      user = userResult.rows[0];
+
+      // --------------------------------------------------
+      // ACCOUNT ACTIVE CHECK
+      // --------------------------------------------------
+
+      if (!user.is_active) {
+        return res.status(403).json({
+          success: false,
+          message: 'User account is inactive'
+        });
+      }
+
+      // --------------------------------------------------
+      // ROLE CHECK
+      // --------------------------------------------------
+
+      if (user.role !== role) {
+
+        if (role === 'worker') {
+          return res.status(403).json({
+            success: false,
+            message: 'This mobile number is not registered as a worker'
+          });
+        }
+
+        if (role === 'customer') {
+          return res.status(403).json({
+            success: false,
+            message: 'This mobile number is not registered as a customer'
+          });
+        }
+
+        return res.status(403).json({
+          success: false,
+          message: 'Invalid user role'
+        });
+      }
+    }
+
+
+    // ==================================================
+    // DEVELOPMENT OTP
+    // ==================================================
+
+    const otp = '123456';
+
+    otpStore.set(phone, {
+      otp,
+      userId: user ? user.id : null,
+      role,
+      name: name ? name.trim() : null,
+      isNewRegistration,
+      expiresAt: Date.now() + 5 * 60 * 1000
+    });
+
+    // ------------------------------------------
+    // DEVELOPMENT LOG
+    // ------------------------------------------
+
+    console.log('================================');
+    console.log('LOCALHANDS OTP');
+    console.log(`Phone: ${phone}`);
+    console.log(`Role: ${role}`);
+    console.log(`New Registration: ${isNewRegistration}`);
+    console.log(`OTP: ${otp}`);
+    console.log('================================');
+
+    return res.status(200).json({
+      success: true,
+      message: isNewRegistration
+        ? 'OTP sent for registration'
+        : 'OTP sent successfully',
+
+      // Development only
+      dev_otp: otp
+    });
+
+  } catch (error) {
+
+    console.error('Send OTP error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to send OTP'
+    });
+  }
+};
+
+
+// ======================================================
+// VERIFY OTP
+// ======================================================
+const verifyOtp = async (req, res) => {
+
+  const client = await pool.connect();
+
+  try {
+
+    const { phone, otp, role } = req.body;
+
+    // ------------------------------------------
+    // VALIDATION
+    // ------------------------------------------
+
+    if (!phone || !otp || !role) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone, OTP and role are required'
+      });
+    }
+
+    // ------------------------------------------
+    // GET STORED OTP
+    // ------------------------------------------
+
+    const storedOtp = otpStore.get(phone);
+
+    if (!storedOtp) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP not found or expired'
+      });
+    }
+
+    // ------------------------------------------
+    // CHECK EXPIRY
+    // ------------------------------------------
+
+    if (storedOtp.expiresAt < Date.now()) {
+
+      otpStore.delete(phone);
+
+      return res.status(400).json({
+        success: false,
+        message: 'OTP has expired'
+      });
+    }
+
+    // ------------------------------------------
+    // CHECK OTP
+    // ------------------------------------------
+
+    if (storedOtp.otp !== otp) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid OTP'
+      });
+    }
+
+    // ------------------------------------------
+    // CHECK ROLE
+    // ------------------------------------------
+
+    if (storedOtp.role !== role) {
+
+      otpStore.delete(phone);
+
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid login role'
+      });
+    }
+
+    let user = null;
+    let workerId = null;
+
+    // ==================================================
+    // NEW REGISTRATION
+    // ==================================================
+
+    if (storedOtp.isNewRegistration === true) {
+
+      // ------------------------------------------
+      // Start transaction
+      // ------------------------------------------
+
+      await client.query('BEGIN');
+
+      // ------------------------------------------
+      // Double-check phone number
+      // ------------------------------------------
+
+      const existingCheck = await client.query(
+        `
+        SELECT
+          id,
+          name,
+          phone,
+          email,
+          role,
+          is_active
+        FROM users
+        WHERE phone = $1
+        `,
+        [phone]
+      );
+
+      if (existingCheck.rows.length > 0) {
+
+        await client.query('ROLLBACK');
+
+        otpStore.delete(phone);
+
+        return res.status(409).json({
+          success: false,
+          message: 'This phone number is already registered'
+        });
+      }
+
+      // ==================================================
+      // CREATE CUSTOMER
+      // ==================================================
+
+      if (role === 'customer') {
+
+        const userResult = await client.query(
+          `
+          INSERT INTO users
+          (
+            name,
+            phone,
+            role,
+            is_active
+          )
+          VALUES
+          (
+            $1,
+            $2,
+            'customer',
+            TRUE
+          )
+          RETURNING
+            id,
+            name,
+            phone,
+            email,
+            role,
+            is_active
+          `,
+          [
+            storedOtp.name,
+            phone
+          ]
+        );
+
+        user = userResult.rows[0];
+      }
+
+      // ==================================================
+      // CREATE WORKER
+      // ==================================================
+
+      if (role === 'worker') {
+
+        const userResult = await client.query(
+          `
+          INSERT INTO users
+          (
+            name,
+            phone,
+            role,
+            is_active
+          )
+          VALUES
+          (
+            $1,
+            $2,
+            'worker',
+            TRUE
+          )
+          RETURNING
+            id,
+            name,
+            phone,
+            email,
+            role,
+            is_active
+          `,
+          [
+            storedOtp.name,
+            phone
+          ]
+        );
+
+        user = userResult.rows[0];
+
+        // ------------------------------------------
+        // Create worker profile
+        // ------------------------------------------
+
+        const workerResult = await client.query(
+          `
+          INSERT INTO workers
+          (
+            user_id,
+            experience_years,
+            rating,
+            total_jobs,
+            is_verified,
+            is_available
+          )
+          VALUES
+          (
+            $1,
+            0,
+            0,
+            0,
+            FALSE,
+            FALSE
+          )
+          RETURNING id
+          `,
+          [user.id]
+        );
+
+        workerId = workerResult.rows[0].id;
+      }
+
+      // ------------------------------------------
+      // Commit
+      // ------------------------------------------
+
+      await client.query('COMMIT');
+
+      // OTP used
+      otpStore.delete(phone);
+
+      // ==================================================
+      // NEW CUSTOMER
+      // ==================================================
+
+      if (role === 'customer') {
+
+        const token = jwt.sign(
+          {
+            userId: user.id,
+            role: user.role
+          },
+          process.env.JWT_SECRET ||
+            'localhands-development-secret',
+          {
+            expiresIn: '7d'
+          }
+        );
+
+        return res.status(201).json({
+          success: true,
+          registration: true,
+          message: 'Account created successfully',
+          token,
+
+          user: {
+            id: user.id,
+            name: user.name,
+            phone: user.phone,
+            email: user.email,
+            role: user.role,
+            worker_id: null
+          }
+        });
+      }
+
+      // ==================================================
+      // NEW WORKER
+      // ==================================================
+
+      if (role === 'worker') {
+
+        return res.status(201).json({
+          success: true,
+          registration: true,
+          pending_verification: true,
+          message:
+            'Registration successful. Your account is pending admin verification.',
+
+          user: {
+            id: user.id,
+            name: user.name,
+            phone: user.phone,
+            email: user.email,
+            role: user.role,
+            worker_id: workerId
+          }
+        });
+      }
+    }
+
+    // ==================================================
+    // EXISTING USER LOGIN
+    // ==================================================
+
+    if (!user) {
+
+      const userResult = await client.query(
+        `
+        SELECT
+          id,
+          name,
+          phone,
+          email,
+          role,
+          is_active
+        FROM users
+        WHERE phone = $1
+        `,
+        [phone]
+      );
+
+      if (userResult.rows.length === 0) {
+
+        otpStore.delete(phone);
+
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+
+      user = userResult.rows[0];
+    }
+
+    // ------------------------------------------
+    // ACTIVE CHECK
+    // ------------------------------------------
+
+    if (!user.is_active) {
+
+      otpStore.delete(phone);
+
+      return res.status(403).json({
+        success: false,
+        message: 'User account is inactive'
+      });
+    }
+
+    // ------------------------------------------
+    // ROLE CHECK
+    // ------------------------------------------
+
+    if (user.role !== role) {
+
+      otpStore.delete(phone);
+
+      return res.status(403).json({
+        success: false,
+        message: 'Invalid user role'
+      });
+    }
+
+    // ==================================================
+    // WORKER LOGIN
+    // ==================================================
+
+    if (role === 'worker') {
+
+      const workerResult = await client.query(
+        `
+        SELECT
+          id,
+          is_verified
+        FROM workers
+        WHERE user_id = $1
+        `,
+        [user.id]
+      );
+
+      if (workerResult.rows.length === 0) {
+
+        otpStore.delete(phone);
+
+        return res.status(404).json({
+          success: false,
+          message: 'Worker profile not found'
+        });
+      }
+
+      workerId = workerResult.rows[0].id;
+
+      // ------------------------------------------
+      // ADMIN APPROVAL REQUIRED
+      // ------------------------------------------
+
+      if (workerResult.rows[0].is_verified !== true) {
+
+        otpStore.delete(phone);
+
+        return res.status(403).json({
+          success: false,
+          pending_verification: true,
+          message:
+            'Your worker registration is pending admin verification'
+        });
+      }
+    }
+
+    // ==================================================
+    // CREATE JWT
+    // ==================================================
+
+    const token = jwt.sign(
+      {
+        userId: user.id,
+        role: user.role
+      },
+      process.env.JWT_SECRET ||
+        'localhands-development-secret',
+      {
+        expiresIn: '7d'
+      }
+    );
+
+    // OTP can only be used once
+    otpStore.delete(phone);
+
+    // ==================================================
+    // LOGIN SUCCESS
+    // ==================================================
+
+    return res.status(200).json({
+      success: true,
+      registration: false,
+      message: 'Login successful',
+
+      token,
+
+      user: {
+        id: user.id,
+        name: user.name,
+        phone: user.phone,
+        email: user.email,
+        role: user.role,
+        worker_id: workerId
+      }
+    });
+
+  } catch (error) {
+
+    try {
+      await client.query('ROLLBACK');
+    } catch (_) {
+      // Ignore rollback error
+    }
+
+    console.error('Verify OTP error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to verify OTP'
+    });
+
+  } finally {
+
+    client.release();
+  }
+};
+
+
+// ======================================================
+// LEGACY WORKER REGISTRATION
+// ======================================================
+// Kept temporarily so existing routes do not break.
+// New Worker App registration will NOT use this endpoint.
+// ======================================================
+
+const registerWorker = async (req, res) => {
+
+  return res.status(410).json({
+    success: false,
+    message:
+      'This registration method is no longer used. Please register using name, mobile number and OTP.'
+  });
+};
+
+
+// ======================================================
+// EXPORTS
+// ======================================================
+
+module.exports = {
+  sendOtp,
+  verifyOtp,
+  registerWorker
+};
