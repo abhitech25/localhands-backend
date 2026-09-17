@@ -13,7 +13,7 @@ const otpStore = new Map();
 const verifyMSG91AccessToken = async (accessToken) => {
   try {
     const response = await axios.post(
-      'https://api.msg91.com/api/v5/widget/verifyAccessToken',
+      'https://control.msg91.com/api/v5/widget/verifyAccessToken',
       {
         'access-token': accessToken
       },
