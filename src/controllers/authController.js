@@ -357,6 +357,477 @@ const msg91Login = async (req, res) => {
 };
 
 
+
+
+
+
+// ======================================================
+// CHECK CUSTOMER
+// ======================================================
+
+const checkCustomer = async (req, res) => {
+  try {
+    const { phone } = req.body;
+
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone number is required',
+      });
+    }
+
+    const cleanPhone = phone
+      .toString()
+      .replace(/\D/g, '')
+      .replace(/^91(?=\d{10}$)/, '');
+
+    if (!/^\d{10}$/.test(cleanPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone number must be 10 digits',
+      });
+    }
+
+    const result = await pool.query(
+      `
+      SELECT id, name, phone, role, is_active
+      FROM users
+      WHERE phone = $1
+      `,
+      [cleanPhone]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(200).json({
+        success: true,
+        exists: false,
+      });
+    }
+
+    const user = result.rows[0];
+
+    if (user.role !== 'customer') {
+      return res.status(200).json({
+        success: true,
+        exists: true,
+        role: user.role,
+        message: `This mobile number is registered as ${user.role}`,
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      exists: true,
+      role: 'customer',
+      user: {
+        id: user.id,
+        name: user.name,
+        phone: user.phone,
+        is_active: user.is_active,
+      },
+    });
+
+  } catch (error) {
+    console.error('Check customer error:', error);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to check customer',
+    });
+  }
+};
+
+
+// ======================================================
+// VERIFY MSG91 ACCESS TOKEN
+// ======================================================
+
+const verifyMSG91AccessTokenForCustomer = async (accessToken) => {
+  try {
+    const response = await axios.post(
+      'https://control.msg91.com/api/v5/widget/verifyAccessToken',
+      {
+        'access-token': accessToken,
+      },
+      {
+        headers: {
+          authkey: process.env.MSG91_AUTHKEY,
+          'Content-Type': 'application/json',
+        },
+      }
+    );
+
+    console.log(
+      'MSG91 CUSTOMER ACCESS TOKEN RESPONSE:',
+      response.data
+    );
+
+    return response.data;
+
+  } catch (error) {
+    console.error(
+      'MSG91 CUSTOMER ACCESS TOKEN ERROR:',
+      error.response?.data || error.message
+    );
+
+    throw new Error(
+      'MSG91 access token verification failed'
+    );
+  }
+};
+
+
+// ======================================================
+// CUSTOMER LOGIN
+// ======================================================
+
+const loginCustomer = async (req, res) => {
+  try {
+    const { access_token } = req.body;
+
+    if (!access_token) {
+      return res.status(400).json({
+        success: false,
+        message: 'MSG91 access token is required',
+      });
+    }
+
+    // ------------------------------------------
+    // VERIFY MSG91 TOKEN
+    // ------------------------------------------
+
+    const msg91Result =
+      await verifyMSG91AccessTokenForCustomer(access_token);
+
+    console.log(
+      'MSG91 CUSTOMER VERIFIED RESULT:',
+      msg91Result
+    );
+
+    // ------------------------------------------
+    // GET VERIFIED PHONE
+    // ------------------------------------------
+
+    const phone =
+      msg91Result?.data?.mobile ||
+      msg91Result?.data?.phone ||
+      msg91Result?.mobile ||
+      msg91Result?.phone;
+
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'Unable to get verified mobile number from MSG91',
+      });
+    }
+
+    const cleanPhone = phone
+      .toString()
+      .replace(/^\+91/, '')
+      .replace(/^91(?=\d{10}$)/, '');
+
+    if (!/^\d{10}$/.test(cleanPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid mobile number returned by MSG91',
+      });
+    }
+
+    // ------------------------------------------
+    // FIND CUSTOMER
+    // ------------------------------------------
+
+    const result = await pool.query(
+      `
+      SELECT
+        id,
+        name,
+        phone,
+        email,
+        role,
+        is_active
+      FROM users
+      WHERE phone = $1
+      `,
+      [cleanPhone]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message:
+          'Customer not registered. Please register first.',
+      });
+    }
+
+    const user = result.rows[0];
+
+    // ------------------------------------------
+    // ROLE CHECK
+    // ------------------------------------------
+
+    if (user.role !== 'customer') {
+      return res.status(403).json({
+        success: false,
+        message:
+          `This mobile number is registered as ${user.role}`,
+      });
+    }
+
+    // ------------------------------------------
+    // ACTIVE CHECK
+    // ------------------------------------------
+
+    if (!user.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: 'Customer account is inactive',
+      });
+    }
+
+    // ------------------------------------------
+    // CREATE LOCALHANDS JWT
+    // ------------------------------------------
+
+    const token = jwt.sign(
+      {
+        userId: user.id,
+        role: 'customer',
+      },
+      process.env.JWT_SECRET ||
+        'localhands-development-secret',
+      {
+        expiresIn: '7d',
+      }
+    );
+
+    // ------------------------------------------
+    // LOGIN SUCCESS
+    // ------------------------------------------
+
+    return res.status(200).json({
+      success: true,
+      registration: false,
+      message: 'Login successful',
+      token,
+
+      user: {
+        id: user.id,
+        name: user.name,
+        phone: user.phone,
+        email: user.email,
+        role: user.role,
+      },
+    });
+
+  } catch (error) {
+    console.error(
+      'Customer login error:',
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to complete customer login',
+    });
+  }
+};
+
+
+// ======================================================
+// CUSTOMER REGISTRATION
+// ======================================================
+
+const registerCustomer = async (req, res) => {
+  try {
+    const {
+      access_token,
+      name,
+    } = req.body;
+
+    // ------------------------------------------
+    // VALIDATION
+    // ------------------------------------------
+
+    if (!access_token) {
+      return res.status(400).json({
+        success: false,
+        message: 'MSG91 access token is required',
+      });
+    }
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Name is required',
+      });
+    }
+
+    // ------------------------------------------
+    // VERIFY MSG91 TOKEN
+    // ------------------------------------------
+
+    const msg91Result =
+      await verifyMSG91AccessTokenForCustomer(
+        access_token
+      );
+
+    console.log(
+      'MSG91 CUSTOMER REGISTRATION VERIFIED RESULT:',
+      msg91Result
+    );
+
+    // ------------------------------------------
+    // GET VERIFIED PHONE
+    // ------------------------------------------
+
+    const phone =
+      msg91Result?.data?.mobile ||
+      msg91Result?.data?.phone ||
+      msg91Result?.mobile ||
+      msg91Result?.phone;
+
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        message:
+          'Unable to get verified mobile number from MSG91',
+      });
+    }
+
+    const cleanPhone = phone
+      .toString()
+      .replace(/^\+91/, '')
+      .replace(/^91(?=\d{10}$)/, '');
+
+    if (!/^\d{10}$/.test(cleanPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid mobile number returned by MSG91',
+      });
+    }
+
+    // ------------------------------------------
+    // DOUBLE-CHECK CUSTOMER
+    // ------------------------------------------
+
+    const existingResult = await pool.query(
+      `
+      SELECT
+        id,
+        name,
+        phone,
+        role,
+        is_active
+      FROM users
+      WHERE phone = $1
+      `,
+      [cleanPhone]
+    );
+
+    if (existingResult.rows.length > 0) {
+      const existingUser = existingResult.rows[0];
+
+      if (existingUser.role === 'customer') {
+        return res.status(409).json({
+          success: false,
+          message:
+            'This mobile number is already registered. Please login.',
+        });
+      }
+
+      return res.status(409).json({
+        success: false,
+        message:
+          `This mobile number is registered as ${existingUser.role}`,
+      });
+    }
+
+    // ------------------------------------------
+    // CREATE CUSTOMER
+    // ------------------------------------------
+
+    const userResult = await pool.query(
+      `
+      INSERT INTO users
+      (
+        name,
+        phone,
+        role,
+        is_active
+      )
+      VALUES
+      (
+        $1,
+        $2,
+        'customer',
+        TRUE
+      )
+      RETURNING
+        id,
+        name,
+        phone,
+        email,
+        role,
+        is_active
+      `,
+      [
+        name.trim(),
+        cleanPhone,
+      ]
+    );
+
+    const user = userResult.rows[0];
+
+    // ------------------------------------------
+    // CREATE LOCALHANDS JWT
+    // ------------------------------------------
+
+    const token = jwt.sign(
+      {
+        userId: user.id,
+        role: 'customer',
+      },
+      process.env.JWT_SECRET ||
+        'localhands-development-secret',
+      {
+        expiresIn: '7d',
+      }
+    );
+
+    // ------------------------------------------
+    // REGISTRATION SUCCESS
+    // ------------------------------------------
+
+    return res.status(201).json({
+      success: true,
+      registration: true,
+      message: 'Registration successful',
+      token,
+
+      user: {
+        id: user.id,
+        name: user.name,
+        phone: user.phone,
+        email: user.email,
+        role: user.role,
+      },
+    });
+
+  } catch (error) {
+    console.error(
+      'Customer registration error:',
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        'Unable to complete customer registration',
+    });
+  }
+};
 // ======================================================
 // SEND OTP
 // ======================================================
@@ -1122,6 +1593,9 @@ module.exports = {
   sendOtp,
   verifyOtp,
   registerWorker,
-  msg91Login
+  msg91Login,
 
+  checkCustomer,
+  loginCustomer,
+  registerCustomer,
 };
