@@ -1,8 +1,360 @@
 const pool = require('../config/database');
 const jwt = require('jsonwebtoken');
+const axios = require('axios');
 
 // Temporary development OTP storage
 const otpStore = new Map();
+
+
+// ======================================================
+// VERIFY MSG91 ACCESS TOKEN
+// ======================================================
+
+const verifyMSG91AccessToken = async (accessToken) => {
+  try {
+    const response = await axios.post(
+      'https://api.msg91.com/api/v5/widget/verifyAccessToken',
+      {
+        'access-token': accessToken
+      },
+      {
+        headers: {
+          authkey: process.env.MSG91_AUTHKEY,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    console.log(
+      'MSG91 ACCESS TOKEN RESPONSE:',
+      response.data
+    );
+
+    return response.data;
+
+  } catch (error) {
+
+    console.error(
+      'MSG91 ACCESS TOKEN ERROR:',
+      error.response?.data || error.message
+    );
+
+    throw new Error(
+      'MSG91 access token verification failed'
+    );
+  }
+};
+
+
+// ======================================================
+// MSG91 LOGIN / REGISTRATION
+// ======================================================
+
+const msg91Login = async (req, res) => {
+
+  try {
+
+    const {
+      access_token,
+      role,
+      name
+    } = req.body;
+
+    // ------------------------------------------
+    // VALIDATION
+    // ------------------------------------------
+
+    if (!access_token) {
+      return res.status(400).json({
+        success: false,
+        message: 'MSG91 access token is required'
+      });
+    }
+
+    if (!role || !['customer', 'worker'].includes(role)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Valid role is required'
+      });
+    }
+
+    // ------------------------------------------
+    // VERIFY TOKEN WITH MSG91
+    // ------------------------------------------
+
+    const msg91Result =
+      await verifyMSG91AccessToken(access_token);
+
+    console.log(
+      'MSG91 VERIFIED RESULT:',
+      msg91Result
+    );
+
+    // ------------------------------------------
+    // GET VERIFIED PHONE
+    // ------------------------------------------
+
+    const phone =
+      msg91Result?.data?.mobile ||
+      msg91Result?.data?.phone ||
+      msg91Result?.mobile ||
+      msg91Result?.phone;
+
+    if (!phone) {
+
+      return res.status(400).json({
+        success: false,
+        message:
+          'Unable to get verified mobile number from MSG91'
+      });
+    }
+
+    // Remove +91 / 91 prefix if MSG91 returns it
+    const cleanPhone = phone
+      .toString()
+      .replace(/^\+91/, '')
+      .replace(/^91(?=\d{10}$)/, '');
+
+    if (!/^\d{10}$/.test(cleanPhone)) {
+
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid mobile number returned by MSG91'
+      });
+    }
+
+    // ------------------------------------------
+    // CHECK USER
+    // ------------------------------------------
+
+    const userResult = await pool.query(
+      `
+      SELECT
+        id,
+        name,
+        phone,
+        email,
+        role,
+        is_active
+      FROM users
+      WHERE phone = $1
+      `,
+      [cleanPhone]
+    );
+
+    // ==================================================
+    // EXISTING USER
+    // ==================================================
+
+    if (userResult.rows.length > 0) {
+
+      const user = userResult.rows[0];
+
+      // ------------------------------------------
+      // ACTIVE CHECK
+      // ------------------------------------------
+
+      if (!user.is_active) {
+
+        return res.status(403).json({
+          success: false,
+          message: 'User account is inactive'
+        });
+      }
+
+      // ------------------------------------------
+      // ROLE CHECK
+      // ------------------------------------------
+
+      if (user.role !== role) {
+
+        return res.status(403).json({
+          success: false,
+          message:
+            `This mobile number is registered as ${user.role}`
+        });
+      }
+
+      // ------------------------------------------
+      // WORKER CHECK
+      // ------------------------------------------
+
+      let workerId = null;
+
+      if (role === 'worker') {
+
+        const workerResult = await pool.query(
+          `
+          SELECT
+            id,
+            is_verified
+          FROM workers
+          WHERE user_id = $1
+          `,
+          [user.id]
+        );
+
+        if (workerResult.rows.length === 0) {
+
+          return res.status(404).json({
+            success: false,
+            message: 'Worker profile not found'
+          });
+        }
+
+        workerId = workerResult.rows[0].id;
+
+        if (workerResult.rows[0].is_verified !== true) {
+
+          return res.status(403).json({
+            success: false,
+            pending_verification: true,
+            message:
+              'Your worker registration is pending admin verification'
+          });
+        }
+      }
+
+      // ------------------------------------------
+      // CREATE JWT
+      // ------------------------------------------
+
+      const token = jwt.sign(
+        {
+          userId: user.id,
+          role: user.role
+        },
+        process.env.JWT_SECRET ||
+          'localhands-development-secret',
+        {
+          expiresIn: '7d'
+        }
+      );
+
+      return res.status(200).json({
+        success: true,
+        registration: false,
+        message: 'Login successful',
+        token,
+
+        user: {
+          id: user.id,
+          name: user.name,
+          phone: user.phone,
+          email: user.email,
+          role: user.role,
+          worker_id: workerId
+        }
+      });
+    }
+
+    // ==================================================
+    // NEW USER
+    // ==================================================
+
+    if (!name || !name.trim()) {
+
+      return res.status(400).json({
+        success: false,
+        message:
+          'Name is required for new registration'
+      });
+    }
+
+    // ------------------------------------------
+    // CUSTOMER REGISTRATION
+    // ------------------------------------------
+
+    if (role === 'customer') {
+
+      const newUserResult = await pool.query(
+        `
+        INSERT INTO users
+        (
+          name,
+          phone,
+          role,
+          is_active
+        )
+        VALUES
+        (
+          $1,
+          $2,
+          'customer',
+          TRUE
+        )
+        RETURNING
+          id,
+          name,
+          phone,
+          email,
+          role,
+          is_active
+        `,
+        [
+          name.trim(),
+          cleanPhone
+        ]
+      );
+
+      const user = newUserResult.rows[0];
+
+      const token = jwt.sign(
+        {
+          userId: user.id,
+          role: user.role
+        },
+        process.env.JWT_SECRET ||
+          'localhands-development-secret',
+        {
+          expiresIn: '7d'
+        }
+      );
+
+      return res.status(201).json({
+        success: true,
+        registration: true,
+        message: 'Account created successfully',
+        token,
+
+        user: {
+          id: user.id,
+          name: user.name,
+          phone: user.phone,
+          email: user.email,
+          role: user.role,
+          worker_id: null
+        }
+      });
+    }
+
+    // ------------------------------------------
+    // WORKER REGISTRATION
+    // ------------------------------------------
+
+    if (role === 'worker') {
+
+      return res.status(400).json({
+        success: false,
+        message:
+          'Worker registration requires service selection'
+      });
+    }
+
+  } catch (error) {
+
+    console.error(
+      'MSG91 login error:',
+      error
+    );
+
+    return res.status(500).json({
+      success: false,
+      message:
+        'Unable to complete MSG91 login'
+    });
+  }
+};
 
 
 // ======================================================
@@ -10,7 +362,13 @@ const otpStore = new Map();
 // ======================================================
 const sendOtp = async (req, res) => {
   try {
-    const { phone, role, name,is_registration } = req.body;
+    const {
+      phone,
+      role,
+      name,
+      is_registration,
+      service_id
+    } = req.body;
 
     // ------------------------------------------
     // VALIDATION
@@ -109,12 +467,28 @@ const sendOtp = async (req, res) => {
       // WORKER REGISTRATION
       // --------------------------------------------------
 
-      if (role === 'worker') {
-
-        if (!name || !name.trim()) {
+      if (role === 'worker' && is_registration === true) {
+        if (!service_id) {
           return res.status(400).json({
             success: false,
-            message: 'Name is required for worker registration'
+            message: 'Service is required for worker registration'
+          });
+        }
+
+        const serviceResult = await pool.query(
+          `
+          SELECT id
+          FROM services
+          WHERE id = $1
+            AND is_active = TRUE
+          `,
+          [service_id]
+        );
+
+        if (serviceResult.rows.length === 0) {
+          return res.status(400).json({
+            success: false,
+            message: 'Invalid service selected'
           });
         }
       }
@@ -197,6 +571,7 @@ const sendOtp = async (req, res) => {
       userId: user ? user.id : null,
       role,
       name: name ? name.trim() : null,
+      serviceId: service_id ? Number(service_id) : null,
       isNewRegistration,
       expiresAt: Date.now() + 5 * 60 * 1000
     });
@@ -464,6 +839,25 @@ const verifyOtp = async (req, res) => {
         workerId = workerResult.rows[0].id;
       }
 
+
+      await client.query(
+        `
+        INSERT INTO worker_services
+        (
+          worker_id,
+          service_id
+        )
+        VALUES
+        (
+          $1,
+          $2
+        )
+        `,
+        [
+          workerId,
+          storedOtp.serviceId
+        ]
+      );
       // ------------------------------------------
       // Commit
       // ------------------------------------------
@@ -727,5 +1121,7 @@ const registerWorker = async (req, res) => {
 module.exports = {
   sendOtp,
   verifyOtp,
-  registerWorker
+  registerWorker,
+  msg91Login
+
 };
