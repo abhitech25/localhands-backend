@@ -5,8 +5,11 @@ const {
   verifyOtp,
   registerWorker,
   checkCustomer,
+
   loginCustomer,
   registerCustomer,
+  msg91Login
+
 } = require('../controllers/authController');
 
 const router = express.Router();
@@ -20,5 +23,6 @@ router.post('/register-worker', registerWorker);
 router.post('/check-customer', checkCustomer);
 router.post('/login', loginCustomer);
 router.post('/register', registerCustomer);
+router.post('/msg91-login', msg91Login);
 
 module.exports = router;
