@@ -1576,6 +1576,387 @@ const registerWorker = async (req, res) => {
   });
 };
 
+// ============================================================
+// WORKER MSG91 LOGIN
+// ============================================================
+
+const msg91WorkerLogin = async (req, res) => {
+  try {
+    const { access_token, phone } = req.body;
+
+    if (!access_token) {
+      return res.status(400).json({
+        success: false,
+        message: 'MSG91 access token is required'
+      });
+    }
+
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone number is required'
+      });
+    }
+
+    // Verify OTP verification token with MSG91
+    const msg91Result =
+      await verifyMSG91AccessToken(access_token);
+
+    console.log(
+      'WORKER MSG91 VERIFIED TOKEN:',
+      msg91Result
+    );
+
+    // Prefer phone returned by MSG91
+    const verifiedPhone =
+      msg91Result?.data?.mobile ||
+      msg91Result?.data?.phone ||
+      msg91Result?.mobile ||
+      msg91Result?.phone ||
+      phone;
+
+    const normalizedPhone =
+      verifiedPhone.toString().replace(/\D/g, '').slice(-10);
+
+    if (!/^\d{10}$/.test(normalizedPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid verified mobile number'
+      });
+    }
+
+    // Find user
+    const userResult = await pool.query(
+      `
+      SELECT
+        id,
+        name,
+        phone,
+        email,
+        role,
+        is_active
+      FROM users
+      WHERE phone = $1
+      LIMIT 1
+      `,
+      [normalizedPhone]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Worker account not found. Please register first.'
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    // Must be worker
+    if (user.role !== 'worker') {
+      return res.status(403).json({
+        success: false,
+        message: `This mobile number is registered as ${user.role}.`
+      });
+    }
+
+    // Account active check
+    if (!user.is_active) {
+      return res.status(403).json({
+        success: false,
+        message: 'Worker account is inactive.'
+      });
+    }
+
+    // Get worker profile
+    const workerResult = await pool.query(
+      `
+      SELECT
+        id,
+        user_id,
+        is_verified,
+        is_available,
+        experience,
+        rating,
+        total_jobs
+      FROM workers
+      WHERE user_id = $1
+      LIMIT 1
+      `,
+      [user.id]
+    );
+
+    if (workerResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Worker profile not found.'
+      });
+    }
+
+    const worker = workerResult.rows[0];
+
+    // Worker must be verified by admin
+    if (!worker.is_verified) {
+      return res.status(403).json({
+        success: false,
+        pending_verification: true,
+        message:
+          'Your worker account is pending admin verification.'
+      });
+    }
+
+    // Create LocalHands JWT
+    const token = jwt.sign(
+      {
+        userId: user.id,
+        role: user.role,
+        workerId: worker.id
+      },
+      process.env.JWT_SECRET || 'localhands-development-secret',
+      {
+        expiresIn: '7d'
+      }
+    );
+
+    return res.status(200).json({
+      success: true,
+      registration: false,
+      message: 'Worker login successful',
+
+      token,
+
+      user: {
+        id: user.id,
+        name: user.name,
+        phone: user.phone,
+        email: user.email,
+        role: user.role,
+        worker_id: worker.id
+      }
+    });
+
+  } catch (error) {
+    console.error(
+      'MSG91 WORKER LOGIN ERROR:',
+      error.response?.data || error.message
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to complete worker login'
+    });
+  }
+};
+
+
+// ============================================================
+// WORKER MSG91 REGISTRATION
+// ============================================================
+
+const msg91WorkerRegister = async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const {
+      access_token,
+      phone,
+      name,
+      service_id
+    } = req.body;
+
+    if (!access_token) {
+      return res.status(400).json({
+        success: false,
+        message: 'MSG91 access token is required'
+      });
+    }
+
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone number is required'
+      });
+    }
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Worker name is required'
+      });
+    }
+
+    if (!service_id) {
+      return res.status(400).json({
+        success: false,
+        message: 'Service selection is required'
+      });
+    }
+
+    // Verify OTP verification token with MSG91
+    const msg91Result =
+      await verifyMSG91AccessToken(access_token);
+
+    console.log(
+      'WORKER REGISTRATION MSG91 VERIFIED TOKEN:',
+      msg91Result
+    );
+
+    // Prefer verified phone returned by MSG91
+    const verifiedPhone =
+      msg91Result?.data?.mobile ||
+      msg91Result?.data?.phone ||
+      msg91Result?.mobile ||
+      msg91Result?.phone ||
+      phone;
+
+    const normalizedPhone =
+      verifiedPhone.toString().replace(/\D/g, '').slice(-10);
+
+    if (!/^\d{10}$/.test(normalizedPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid verified mobile number'
+      });
+    }
+
+    // Check service
+    const serviceResult = await client.query(
+      `
+      SELECT id, name
+      FROM services
+      WHERE id = $1
+        AND is_active = true
+      LIMIT 1
+      `,
+      [Number(service_id)]
+    );
+
+    if (serviceResult.rows.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Selected service is invalid'
+      });
+    }
+
+    // Check duplicate mobile
+    const existingUser = await client.query(
+      `
+      SELECT id, role
+      FROM users
+      WHERE phone = $1
+      LIMIT 1
+      `,
+      [normalizedPhone]
+    );
+
+    if (existingUser.rows.length > 0) {
+      return res.status(409).json({
+        success: false,
+        message:
+          'This mobile number is already registered.'
+      });
+    }
+
+    await client.query('BEGIN');
+
+    // Create user
+    const userResult = await client.query(
+      `
+      INSERT INTO users (
+        name,
+        phone,
+        role,
+        is_active
+      )
+      VALUES ($1, $2, 'worker', true)
+      RETURNING id, name, phone, role, is_active
+      `,
+      [
+        name.trim(),
+        normalizedPhone
+      ]
+    );
+
+    const user = userResult.rows[0];
+
+    // Create worker profile
+    const workerResult = await client.query(
+      `
+      INSERT INTO workers (
+        user_id,
+        is_verified,
+        is_available,
+        experience,
+        rating,
+        total_jobs
+      )
+      VALUES (
+        $1,
+        false,
+        false,
+        0,
+        0,
+        0
+      )
+      RETURNING id, user_id, is_verified
+      `,
+      [user.id]
+    );
+
+    const worker = workerResult.rows[0];
+
+    // Assign selected service
+    await client.query(
+      `
+      INSERT INTO worker_services (
+        worker_id,
+        service_id
+      )
+      VALUES ($1, $2)
+      `,
+      [
+        worker.id,
+        Number(service_id)
+      ]
+    );
+
+    await client.query('COMMIT');
+
+    return res.status(201).json({
+      success: true,
+      registration: true,
+      pending_verification: true,
+      message:
+        'Worker registration successful. Your account is pending admin verification.',
+
+      user: {
+        id: user.id,
+        name: user.name,
+        phone: user.phone,
+        role: user.role,
+        worker_id: worker.id
+      }
+    });
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+
+    console.error(
+      'MSG91 WORKER REGISTRATION ERROR:',
+      error.response?.data || error.message
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: 'Unable to complete worker registration'
+    });
+
+  } finally {
+    client.release();
+  }
+};
+
+
+
 
 // ======================================================
 // EXPORTS
@@ -1585,7 +1966,11 @@ module.exports = {
   sendOtp,
   verifyOtp,
   registerWorker,
+
   msg91Login,
+
+  msg91WorkerLogin,
+  msg91WorkerRegister,
 
   checkCustomer,
   loginCustomer,

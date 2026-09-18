@@ -1,14 +1,15 @@
 const express = require('express');
 
 const {
-  sendOtp,
-  verifyOtp,
-  registerWorker,
-  checkCustomer,
-
-  loginCustomer,
-  registerCustomer,
-  msg91Login
+   sendOtp,
+    verifyOtp,
+    registerWorker,
+    msg91Login,
+    msg91WorkerLogin,
+    msg91WorkerRegister,
+    checkCustomer,
+    loginCustomer,
+    registerCustomer,
 
 } = require('../controllers/authController');
 
@@ -24,5 +25,15 @@ router.post('/check-customer', checkCustomer);
 router.post('/login', loginCustomer);
 router.post('/register', registerCustomer);
 router.post('/msg91-login', msg91Login);
+
+router.post(
+  '/msg91-worker-login',
+  msg91WorkerLogin
+);
+
+router.post(
+  '/msg91-worker-register',
+  msg91WorkerRegister
+);
 
 module.exports = router;
