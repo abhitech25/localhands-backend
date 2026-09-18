@@ -56,6 +56,7 @@ const msg91Login = async (req, res) => {
 
     const {
       access_token,
+      phone,
       role,
       name
     } = req.body;
@@ -93,33 +94,24 @@ const msg91Login = async (req, res) => {
     // ------------------------------------------
     // GET VERIFIED PHONE
     // ------------------------------------------
+     if (!phone) {
+       return res.status(400).json({
+         success: false,
+         message: 'Phone number is required'
+       });
+     }
 
-    const phone =
-      msg91Result?.data?.mobile ||
-      msg91Result?.data?.phone ||
-      msg91Result?.mobile ||
-      msg91Result?.phone;
-
-    if (!phone) {
-
-      return res.status(400).json({
-        success: false,
-        message:
-          'Unable to get verified mobile number from MSG91'
-      });
-    }
 
     // Remove +91 / 91 prefix if MSG91 returns it
     const cleanPhone = phone
       .toString()
-      .replace(/^\+91/, '')
+      .replace(/\D/g, '')
       .replace(/^91(?=\d{10}$)/, '');
 
     if (!/^\d{10}$/.test(cleanPhone)) {
-
       return res.status(400).json({
         success: false,
-        message: 'Invalid mobile number returned by MSG91'
+        message: 'Invalid mobile number'
       });
     }
 
