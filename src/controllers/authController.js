@@ -1675,7 +1675,7 @@ const msg91WorkerLogin = async (req, res) => {
         user_id,
         is_verified,
         is_available,
-        experience,
+        experience_years,
         rating,
         total_jobs
       FROM workers
@@ -1885,7 +1885,7 @@ const msg91WorkerRegister = async (req, res) => {
         user_id,
         is_verified,
         is_available,
-        experience,
+        experience_years,
         rating,
         total_jobs
       )
