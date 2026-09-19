@@ -14,6 +14,10 @@ const workerRoutes = require('./routes/workerRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const userRoutes = require('./routes/userRoutes');
 
+const paymentRoutes = require("./routes/paymentRoutes");
+
+
+
 const app = express();
 
 app.use(cors());
@@ -37,6 +41,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/workers', workerRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/users', userRoutes);
+app.use("/api/payments", paymentRoutes);
 
 
 
