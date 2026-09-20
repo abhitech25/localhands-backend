@@ -86,9 +86,12 @@ const verifyPayment = async (req, res) => {
       `UPDATE bookings
        SET payment_status = 'paid',
            payment_id = $1,
-           razorpay_order_id = $2
+           razorpay_order_id = $2,
+           status = 'searching_worker',
+           updated_at = CURRENT_TIMESTAMP
        WHERE id = $3
-       RETURNING id, booking_number, payment_status`,
+         AND payment_status IS DISTINCT FROM 'paid'
+       RETURNING id, booking_number, payment_status, status`,
       [
         razorpay_payment_id,
         razorpay_order_id,
