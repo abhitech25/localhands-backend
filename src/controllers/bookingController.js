@@ -467,6 +467,7 @@ const getWorkerBookings = async (req, res) => {
         -- New jobs available to this worker
         (
           b.status = 'pending'
+          AND b.payment_status = 'paid'
           AND b.worker_id IS NULL
         )
 

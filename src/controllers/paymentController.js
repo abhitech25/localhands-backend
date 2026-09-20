@@ -121,7 +121,59 @@ const verifyPayment = async (req, res) => {
 };
 
 
+
+// Mark Payment Failed
+const paymentFailed = async (req, res) => {
+  try {
+    const { booking_id } = req.body;
+
+    if (!booking_id) {
+      return res.status(400).json({
+        success: false,
+        message: "booking_id is required",
+      });
+    }
+
+    const result = await pool.query(
+      `UPDATE bookings
+       SET payment_status = 'failed',
+           status = 'cancelled',
+           cancellation_reason = 'Payment failed or was cancelled',
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = $1
+         AND payment_status IS DISTINCT FROM 'paid'
+       RETURNING id, booking_number, payment_status, status`,
+      [booking_id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Booking not found or payment is already successful",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Payment failed. Booking cancelled.",
+      booking: result.rows[0],
+    });
+
+  } catch (error) {
+    console.error("RAZORPAY PAYMENT FAILED ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Unable to update failed payment",
+      error: error.message,
+    });
+  }
+};
+
+
+
 module.exports = {
   createOrder,
   verifyPayment,
+  paymentFailed,
 };
