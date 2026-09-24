@@ -481,7 +481,7 @@ const getWorkerBookings = async (req, res) => {
         -- ======================================================
 
         (
-          b.status = 'pending'
+          b.status IN ('pending', 'searching_worker')
           AND b.payment_status = 'paid'
           AND b.worker_id IS NULL
 
@@ -547,6 +547,8 @@ const getWorkerBookings = async (req, res) => {
 // ============================================================
 // ACCEPT BOOKING
 // ============================================================
+
+
 
 const acceptBooking = async (req, res) => {
   const client = await pool.connect();
