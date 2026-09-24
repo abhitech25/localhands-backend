@@ -87,7 +87,7 @@ const verifyPayment = async (req, res) => {
        SET payment_status = 'paid',
            payment_id = $1,
            razorpay_order_id = $2,
-           status = 'searching_worker',
+           status = 'Pending',
            updated_at = CURRENT_TIMESTAMP
        WHERE id = $3
          AND payment_status IS DISTINCT FROM 'paid'
