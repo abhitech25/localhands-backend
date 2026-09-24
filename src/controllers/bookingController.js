@@ -1,10 +1,4 @@
-
 const pool = require('../config/database');
-
-
-// ============================================================
-// CREATE BOOKING
-// ============================================================
 
 const createBooking = async (req, res) => {
   const client = await pool.connect();
@@ -22,6 +16,7 @@ const createBooking = async (req, res) => {
       estimated_price
     } = req.body;
 
+    // Validate required fields
     if (
       !user_id ||
       !service_id ||
@@ -38,7 +33,7 @@ const createBooking = async (req, res) => {
 
     await client.query('BEGIN');
 
-    // Verify service option and get price
+    // Verify service option and get its price
     let price = estimated_price;
 
     if (service_option_id) {
@@ -47,8 +42,8 @@ const createBooking = async (req, res) => {
         SELECT base_price
         FROM service_options
         WHERE id = $1
-          AND service_id = $2
-          AND is_active = TRUE
+        AND service_id = $2
+        AND is_active = TRUE
         `,
         [
           service_option_id,
@@ -68,11 +63,11 @@ const createBooking = async (req, res) => {
       price = optionResult.rows[0].base_price;
     }
 
-    // Generate booking number
-    const bookingNumber = 'LH' + Date.now().toString();
+    // Generate unique booking number
+    const bookingNumber =
+      'LH' + Date.now().toString();
 
-    // New bookings initially remain pending.
-    // Payment success changes the status to searching_worker.
+    // Create booking
     const bookingResult = await client.query(
       `
       INSERT INTO bookings
@@ -130,7 +125,10 @@ const createBooking = async (req, res) => {
   } catch (error) {
     await client.query('ROLLBACK');
 
-    console.error('Create booking error:', error);
+    console.error(
+      'Create booking error:',
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -142,10 +140,9 @@ const createBooking = async (req, res) => {
   }
 };
 
-
-// ============================================================
-// GET MY BOOKINGS
-// ============================================================
+//module.exports = {
+//  createBooking
+//};
 
 const getMyBookings = async (req, res) => {
   try {
@@ -166,8 +163,10 @@ const getMyBookings = async (req, res) => {
         b.user_id,
         b.service_id,
         b.service_option_id,
+
         b.address_id,
 
+        -- Address details
         a.address_line,
         a.landmark,
         a.city,
@@ -175,7 +174,6 @@ const getMyBookings = async (req, res) => {
         a.pincode,
 
         b.problem_description,
-
         TO_CHAR(
           b.scheduled_date,
           'YYYY-MM-DD'
@@ -216,7 +214,10 @@ const getMyBookings = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Get my bookings error:', error);
+    console.error(
+      'Get my bookings error:',
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -224,11 +225,6 @@ const getMyBookings = async (req, res) => {
     });
   }
 };
-
-
-// ============================================================
-// GET BOOKING BY ID
-// ============================================================
 
 const getBookingById = async (req, res) => {
   try {
@@ -309,7 +305,10 @@ const getBookingById = async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Get booking error:', error);
+    console.error(
+      'Get booking error:',
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -317,11 +316,6 @@ const getBookingById = async (req, res) => {
     });
   }
 };
-
-
-// ============================================================
-// CANCEL BOOKING
-// ============================================================
 
 const cancelBooking = async (req, res) => {
   const client = await pool.connect();
@@ -359,10 +353,11 @@ const cancelBooking = async (req, res) => {
       });
     }
 
-    const booking = bookingResult.rows[0];
+    const booking =
+      bookingResult.rows[0];
 
-    // Allow cancellation only before worker assignment
-    if (!['pending', 'searching_worker'].includes(booking.status)) {
+    // Only pending bookings can be cancelled
+    if (booking.status !== 'pending') {
       await client.query('ROLLBACK');
 
       return res.status(400).json({
@@ -399,7 +394,10 @@ const cancelBooking = async (req, res) => {
   } catch (error) {
     await client.query('ROLLBACK');
 
-    console.error('Cancel booking error:', error);
+    console.error(
+      'Cancel booking error:',
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -411,6 +409,15 @@ const cancelBooking = async (req, res) => {
   }
 };
 
+
+
+// ============================================================
+// GET AVAILABLE WORKER BOOKINGS
+// ============================================================
+
+// ============================================================
+// GET WORKER BOOKINGS
+// ============================================================
 
 // ============================================================
 // GET WORKER BOOKINGS
@@ -467,13 +474,14 @@ const getWorkerBookings = async (req, res) => {
       WHERE
 
       (
-        -- ====================================================
+        -- ======================================================
         -- NEW JOBS
-        -- Paid jobs looking for a worker
-        -- ====================================================
+        -- Only show pending paid jobs for services
+        -- provided by this worker
+        -- ======================================================
 
         (
-          b.status IN ('pending', 'searching_worker')
+          b.status = 'pending'
           AND b.payment_status = 'paid'
           AND b.worker_id IS NULL
 
@@ -487,9 +495,10 @@ const getWorkerBookings = async (req, res) => {
 
         OR
 
-        -- ====================================================
+        -- ======================================================
         -- ALREADY ASSIGNED JOBS
-        -- ====================================================
+        -- Only return jobs assigned to this worker
+        -- ======================================================
 
         (
           b.worker_id = $1
@@ -535,8 +544,6 @@ const getWorkerBookings = async (req, res) => {
     });
   }
 };
-
-
 // ============================================================
 // ACCEPT BOOKING
 // ============================================================
@@ -556,6 +563,10 @@ const acceptBooking = async (req, res) => {
     }
 
     await client.query('BEGIN');
+
+    // ============================================================
+    // CHECK BOOKING + WORKER SERVICE
+    // ============================================================
 
     const bookingResult = await client.query(
       `
@@ -592,30 +603,37 @@ const acceptBooking = async (req, res) => {
 
     const booking = bookingResult.rows[0];
 
-    // Verify service
+    // ============================================================
+    // VERIFY WORKER SERVICE
+    // ============================================================
+
     if (!booking.worker_provides_service) {
       await client.query('ROLLBACK');
 
       return res.status(403).json({
         success: false,
-        message:
-          'You are not authorized to accept this service booking'
+        message: 'You are not authorized to accept this service booking'
       });
     }
 
-    // Already assigned
+    // ============================================================
+    // CHECK ALREADY ASSIGNED
+    // ============================================================
+
     if (booking.worker_id !== null) {
       await client.query('ROLLBACK');
 
       return res.status(400).json({
         success: false,
-        message:
-          'Booking has already been assigned to a worker'
+        message: 'Booking has already been assigned to a worker'
       });
     }
 
-    // Allow both pending and searching_worker
-    if (!['pending', 'searching_worker'].includes(booking.status)) {
+    // ============================================================
+    // CHECK STATUS
+    // ============================================================
+
+    if (booking.status !== 'pending') {
       await client.query('ROLLBACK');
 
       return res.status(400).json({
@@ -625,7 +643,10 @@ const acceptBooking = async (req, res) => {
       });
     }
 
-    // Assign worker
+    // ============================================================
+    // ASSIGN WORKER
+    // ============================================================
+
     const result = await client.query(
       `
       UPDATE bookings
@@ -650,7 +671,10 @@ const acceptBooking = async (req, res) => {
   } catch (error) {
     await client.query('ROLLBACK');
 
-    console.error('Accept booking error:', error);
+    console.error(
+      'Accept booking error:',
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -683,6 +707,7 @@ const rejectBooking = async (req, res) => {
 
     await client.query('BEGIN');
 
+    // Check booking
     const bookingResult = await client.query(
       `
       SELECT
@@ -699,13 +724,17 @@ const rejectBooking = async (req, res) => {
         ) AS worker_provides_service
 
       FROM bookings b
-
       WHERE b.id = $1
-
       FOR UPDATE
       `,
       [id, worker_id]
     );
+
+
+
+
+
+
 
     if (bookingResult.rows.length === 0) {
       await client.query('ROLLBACK');
@@ -716,21 +745,21 @@ const rejectBooking = async (req, res) => {
       });
     }
 
+//    const booking = bookingResult.rows[0];
+
     const booking = bookingResult.rows[0];
 
-    // Verify service
     if (!booking.worker_provides_service) {
       await client.query('ROLLBACK');
 
       return res.status(403).json({
         success: false,
-        message:
-          'You are not authorized to reject this service booking'
+        message: 'You are not authorized to reject this service booking'
       });
     }
 
-    // Allow both pending and searching_worker
-    if (!['pending', 'searching_worker'].includes(booking.status)) {
+    // Only pending bookings can be rejected
+    if (booking.status !== 'pending') {
       await client.query('ROLLBACK');
 
       return res.status(400).json({
@@ -746,8 +775,7 @@ const rejectBooking = async (req, res) => {
 
       return res.status(400).json({
         success: false,
-        message:
-          'Booking has already been assigned to a worker'
+        message: 'Booking has already been assigned to a worker'
       });
     }
 
@@ -775,7 +803,10 @@ const rejectBooking = async (req, res) => {
   } catch (error) {
     await client.query('ROLLBACK');
 
-    console.error('Reject booking error:', error);
+    console.error(
+      'Reject booking error:',
+      error
+    );
 
     return res.status(500).json({
       success: false,
@@ -786,12 +817,6 @@ const rejectBooking = async (req, res) => {
     client.release();
   }
 };
-
-
-// ============================================================
-// UPDATE WORKER BOOKING STATUS
-// ============================================================
-
 const updateWorkerBookingStatus = async (req, res) => {
   const client = await pool.connect();
 
@@ -802,8 +827,7 @@ const updateWorkerBookingStatus = async (req, res) => {
     if (!worker_id || !status) {
       return res.status(400).json({
         success: false,
-        message:
-          'worker_id and status are required'
+        message: 'worker_id and status are required'
       });
     }
 
@@ -825,10 +849,7 @@ const updateWorkerBookingStatus = async (req, res) => {
 
     const bookingResult = await client.query(
       `
-      SELECT
-        id,
-        worker_id,
-        status
+      SELECT id, worker_id, status
       FROM bookings
       WHERE id = $1
       FOR UPDATE
@@ -852,20 +873,16 @@ const updateWorkerBookingStatus = async (req, res) => {
 
       return res.status(400).json({
         success: false,
-        message:
-          'Booking is not assigned to any worker'
+        message: 'Booking is not assigned to any worker'
       });
     }
 
-    if (
-      Number(booking.worker_id) !== Number(worker_id)
-    ) {
+    if (Number(booking.worker_id) !== Number(worker_id)) {
       await client.query('ROLLBACK');
 
       return res.status(403).json({
         success: false,
-        message:
-          'This booking is assigned to another worker'
+        message: 'This booking is assigned to another worker'
       });
     }
 
@@ -876,9 +893,7 @@ const updateWorkerBookingStatus = async (req, res) => {
       in_progress: 'completed'
     };
 
-    if (
-      validTransitions[booking.status] !== status
-    ) {
+    if (validTransitions[booking.status] !== status) {
       await client.query('ROLLBACK');
 
       return res.status(400).json({
@@ -904,18 +919,14 @@ const updateWorkerBookingStatus = async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      message:
-        'Booking status updated successfully',
+      message: 'Booking status updated successfully',
       data: result.rows[0]
     });
 
   } catch (error) {
     await client.query('ROLLBACK');
 
-    console.error(
-      'Update worker booking status error:',
-      error
-    );
+    console.error('Update worker booking status error:', error);
 
     return res.status(500).json({
       success: false,
@@ -927,10 +938,6 @@ const updateWorkerBookingStatus = async (req, res) => {
   }
 };
 
-
-// ============================================================
-// START BOOKING
-// ============================================================
 
 const startBooking = async (req, res) => {
   const client = await pool.connect();
@@ -977,20 +984,16 @@ const startBooking = async (req, res) => {
 
       return res.status(400).json({
         success: false,
-        message:
-          'Booking is not assigned to any worker'
+        message: 'Booking is not assigned to any worker'
       });
     }
 
-    if (
-      Number(booking.worker_id) !== Number(worker_id)
-    ) {
+    if (Number(booking.worker_id) !== Number(worker_id)) {
       await client.query('ROLLBACK');
 
       return res.status(403).json({
         success: false,
-        message:
-          'This booking is assigned to another worker'
+        message: 'This booking is assigned to another worker'
       });
     }
 
@@ -1040,9 +1043,13 @@ const startBooking = async (req, res) => {
 };
 
 
-// ============================================================
-// EXPORTS
-// ============================================================
+
+
+
+
+
+
+
 
 module.exports = {
   createBooking,
