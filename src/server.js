@@ -13,6 +13,7 @@ const authRoutes = require('./routes/authRoutes');
 const workerRoutes = require('./routes/workerRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const userRoutes = require('./routes/userRoutes');
+const reviewRoutes = require('./routes/reviewRoutes');
 
 const paymentRoutes = require("./routes/paymentRoutes");
 
@@ -44,6 +45,8 @@ app.use('/api/users', userRoutes);
 app.use("/api/payments", paymentRoutes);
 
 
+
+app.use('/api/reviews', reviewRoutes);
 
 // Root
 app.get('/', (req, res) => {
