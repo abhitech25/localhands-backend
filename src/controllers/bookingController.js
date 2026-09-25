@@ -461,7 +461,16 @@ const getWorkerBookings = async (req, res) => {
         s.name AS service_name,
 
         so.name AS option_name,
-        so.base_price AS option_price
+        so.base_price AS option_price,
+
+        -- CUSTOMER ADDRESS
+        a.address_line,
+        a.landmark,
+        a.city,
+        a.state,
+        a.pincode,
+        a.latitude,
+        a.longitude
 
       FROM bookings b
 
@@ -471,15 +480,12 @@ const getWorkerBookings = async (req, res) => {
       LEFT JOIN service_options so
         ON so.id = b.service_option_id
 
+      LEFT JOIN addresses a
+        ON a.id = b.address_id
+
       WHERE
 
       (
-        -- ======================================================
-        -- NEW JOBS
-        -- Only show pending paid jobs for services
-        -- provided by this worker
-        -- ======================================================
-
         (
           b.status IN ('pending', 'searching_worker')
           AND b.payment_status = 'paid'
@@ -494,11 +500,6 @@ const getWorkerBookings = async (req, res) => {
         )
 
         OR
-
-        -- ======================================================
-        -- ALREADY ASSIGNED JOBS
-        -- Only return jobs assigned to this worker
-        -- ======================================================
 
         (
           b.worker_id = $1
