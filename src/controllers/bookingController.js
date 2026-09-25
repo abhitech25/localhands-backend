@@ -635,7 +635,7 @@ const acceptBooking = async (req, res) => {
     // CHECK STATUS
     // ============================================================
 
-    if (booking.status !== 'pending') {
+    if (booking.status !== 'pending' && booking.status !== 'searching_worker') {
       await client.query('ROLLBACK');
 
       return res.status(400).json({
@@ -761,7 +761,7 @@ const rejectBooking = async (req, res) => {
     }
 
     // Only pending bookings can be rejected
-    if (booking.status !== 'pending') {
+    if (booking.status !== 'pending' &&  booking.status !== 'searching_worker') {
       await client.query('ROLLBACK');
 
       return res.status(400).json({
